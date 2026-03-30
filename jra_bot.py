@@ -339,32 +339,33 @@ async def step_agree(page: Page) -> bool:
 
 
 # ============================================================
-# ステップ5: 指定席選択画面 - 「残席発売」申し込みボタン
+# ステップ5: 指定席選択画面 - 申し込みボタン
 # ============================================================
 async def step_remaining_seats(page: Page) -> bool:
-    log("指定席選択画面: 「残席発売」申し込みボタンを探します")
+    log("指定席選択画面: 申し込みボタンを探します")
 
-    # NOTE: 実際のHTMLに応じてセレクタを変更してください
     remaining_selectors = [
+        # 実際のHTMLで確認済み: 「受付中」リンク
+        'a:has-text("受付中")',
+        'a[href*="SeatKindSelect.aspx"]',
+        # 念のため旧テキストも残す
         'a:has-text("残席発売")',
         'button:has-text("残席発売")',
-        'input[value="残席発売"]',
-        # 「残席」を含むリンク/ボタン
         'a:has-text("残席")',
-        'button:has-text("残席")',
+        'button:has-text("申し込み")',
     ]
     clicked = False
     for sel in remaining_selectors:
         try:
             await page.click(sel, timeout=5000)
-            log(f"  「残席発売」ボタンをクリックしました (セレクタ: {sel})")
+            log(f"  申し込みボタンをクリックしました (セレクタ: {sel})")
             clicked = True
             break
         except Exception:
             continue
 
     if not clicked:
-        log("  [ERROR] 「残席発売」ボタンが見つかりません。")
+        log("  [ERROR] 申し込みボタンが見つかりません。")
         return False
 
     await page.wait_for_load_state("networkidle", timeout=config.BROWSER_TIMEOUT)

@@ -128,20 +128,36 @@ async def step_search(page: Page) -> bool:
     racecourse_label = RACECOURSE_LABEL_MAP.get(config.RACECOURSE, config.RACECOURSE)
 
     # --- 競馬場選択: #dropDownListPlace ---
-    selected_course = False
+    # ドロップダウンの全選択肢を取得してログ出力
     try:
-        # まずラベルで選択を試みる
-        await page.select_option('#dropDownListPlace', label=racecourse_label, timeout=5000)
-        log(f"  競馬場を選択しました (label: {racecourse_label})")
-        selected_course = True
+        place_options = await page.eval_on_selector_all(
+            '#dropDownListPlace option',
+            'els => els.map(el => ({value: el.value, text: el.textContent.trim()}))'
+        )
+        available = [o['text'] for o in place_options if o['value']]
+        log(f"  競馬場の選択肢: {available}")
     except Exception:
-        pass
+        available = []
 
-    if not selected_course:
+    selected_course = False
+
+    # config指定の競馬場を優先、なければ東京→中山の順で自動選択
+    priority = [racecourse_label, config.RACECOURSE, "東京競馬場", "中山競馬場"]
+    for label in priority:
         try:
-            # ラベルが短縮形の場合も試みる
-            await page.select_option('#dropDownListPlace', label=config.RACECOURSE, timeout=5000)
-            log(f"  競馬場を選択しました (label: {config.RACECOURSE})")
+            await page.select_option('#dropDownListPlace', label=label, timeout=3000)
+            log(f"  競馬場を選択しました: {label}")
+            selected_course = True
+            break
+        except Exception:
+            continue
+
+    if not selected_course and available:
+        # それでも選択できなければ最初の選択肢を使用
+        try:
+            first = next(o for o in place_options if o['value'])
+            await page.select_option('#dropDownListPlace', value=first['value'], timeout=3000)
+            log(f"  競馬場を自動選択しました（最初の選択肢）: {first['text']}")
             selected_course = True
         except Exception:
             pass
@@ -165,13 +181,24 @@ async def step_search(page: Page) -> bool:
     # --- 開催日選択: #dropDownListEventDate ---
     filled_date = False
     try:
-        # config.RACE_DATE ("YYYY/MM/DD") を含むoption textを探して選択
         options = await page.eval_on_selector_all(
             '#dropDownListEventDate option',
             'els => els.map(el => ({value: el.value, text: el.textContent.trim()}))'
         )
-        log(f"  開催日の選択肢: {[o['text'] for o in options if o['value']]}")
-        matched = next((o for o in options if config.RACE_DATE in o['text'] or o['text'] in config.RACE_DATE), None)
+        valid_options = [o for o in options if o['value']]
+        log(f"  開催日の選択肢: {[o['text'] for o in valid_options]}")
+
+        if config.RACE_DATE:
+            # config指定日に一致する選択肢を探す
+            matched = next((o for o in valid_options if config.RACE_DATE in o['text'] or o['text'] in config.RACE_DATE), None)
+        else:
+            matched = None
+
+        if not matched and valid_options:
+            # 指定日が見つからなければ最初の選択肢を自動選択
+            matched = valid_options[0]
+            log(f"  指定日が見つからないため最初の開催日を自動選択します")
+
         if matched:
             await page.select_option('#dropDownListEventDate', value=matched['value'], timeout=5000)
             log(f"  開催日を選択しました: {matched['text']}")
@@ -261,53 +288,50 @@ async def step_apply(page: Page) -> bool:
 # ステップ4: 注意事項確認ページ
 # ============================================================
 async def step_agree(page: Page) -> bool:
-    log("注意事項確認ページ: ラジオボタンにチェックします")
+    log("注意事項確認ページ: チェックボックスにチェックします")
 
-    # --- 同意ラジオボタン ---
-    # NOTE: 実際のHTMLに応じてセレクタを変更してください
+    # --- 確認チェックボックス（Alpine.js x-model="confirmed"）---
     agree_selectors = [
-        'input[type="radio"][value="agree"]',
-        'input[type="radio"][value="1"]',
-        'input[type="radio"][name*="agree"]',
-        'input[type="checkbox"][name*="agree"]',
-        'label:has-text("同意") input',
-        'label:has-text("確認") input',
+        'input[type="checkbox"][x-model="confirmed"]',
+        'input[type="checkbox"]',
     ]
     checked = False
     for sel in agree_selectors:
         try:
             await page.check(sel, timeout=5000)
-            log(f"  同意ラジオボタンをチェックしました (セレクタ: {sel})")
+            log(f"  チェックボックスをチェックしました (セレクタ: {sel})")
             checked = True
             break
         except Exception:
             continue
 
     if not checked:
-        log("  [WARN] 同意ラジオボタンが見つかりませんでした。スキップします。")
+        log("  [WARN] チェックボックスが見つかりませんでした。スキップします。")
 
-    # --- 「次へ進む」ボタン ---
+    # Alpine.jsがクラスを更新するまで少し待機
+    await asyncio.sleep(0.5)
+
+    # --- 「次へ進む」ボタン（<p>タグ）---
     next_btn_selectors = [
+        'p#js_close_btn',
+        'p.btn_03:not(.btn_off)',
+        'p:has-text("次へ進む")',
         'button:has-text("次へ進む")',
-        'input[value="次へ進む"]',
         'a:has-text("次へ進む")',
-        'button:has-text("次へ")',
-        'input[value="次へ"]',
-        'button[type="submit"]',
-        'input[type="submit"]',
+        'input[value="次へ進む"]',
     ]
     clicked = False
     for sel in next_btn_selectors:
         try:
             await page.click(sel, timeout=5000)
-            log(f"  「次へ進む」ボタンをクリックしました (セレクタ: {sel})")
+            log(f"  「次へ進む」をクリックしました (セレクタ: {sel})")
             clicked = True
             break
         except Exception:
             continue
 
     if not clicked:
-        log("  [ERROR] 「次へ進む」ボタンが見つかりません。")
+        log("  [ERROR] 「次へ進む」が見つかりません。")
         return False
 
     await page.wait_for_load_state("networkidle", timeout=config.BROWSER_TIMEOUT)

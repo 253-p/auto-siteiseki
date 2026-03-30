@@ -20,7 +20,7 @@ import config
 # サイトURL
 # ============================================================
 BASE_URL = "https://jra-tickets.jp/"
-LOGIN_URL = "https://jra-tickets.jp/login"  # 実際のURLに合わせて変更
+LOGIN_URL = "https://my.jra-tickets.jp/login/"
 
 # ============================================================
 # ログ出力ヘルパー
@@ -33,22 +33,17 @@ def log(msg: str) -> None:
 # ステップ1: ログイン
 # ============================================================
 async def step_login(page: Page) -> bool:
-    log(f"ログイン画面を開きます: {BASE_URL}")
+    log(f"ログイン画面を開きます: {LOGIN_URL}")
     try:
-        await page.goto(BASE_URL, timeout=config.BROWSER_TIMEOUT)
+        await page.goto(LOGIN_URL, timeout=config.BROWSER_TIMEOUT)
     except Exception as e:
         log(f"サイトへのアクセスに失敗しました: {e}")
         return False
 
-    # --- IDフィールド ---
-    # NOTE: 実際のHTMLに応じて name/id/placeholder を確認してください
+    # --- IDフィールド（会員番号またはメールアドレス）---
     id_selectors = [
-        'input[name="userId"]',
-        'input[name="user_id"]',
-        'input[id="userId"]',
-        'input[id="user_id"]',
-        'input[placeholder*="ID"]',
-        'input[type="text"]',  # 最終手段: 最初のテキスト入力
+        'input[name="mail"]',
+        'input[id="loginMail"]',
     ]
     filled_id = False
     for sel in id_selectors:
@@ -65,8 +60,8 @@ async def step_login(page: Page) -> bool:
 
     # --- パスワードフィールド ---
     pw_selectors = [
-        'input[name="password"]',
-        'input[id="password"]',
+        'input[name="confirmation"]',
+        'input[id="loginPassword"]',
         'input[type="password"]',
     ]
     filled_pw = False
@@ -84,10 +79,10 @@ async def step_login(page: Page) -> bool:
 
     # --- ログインボタン ---
     login_btn_selectors = [
+        'button:has-text("ログイン")',
         'button[type="submit"]',
         'input[type="submit"]',
         'a:has-text("ログイン")',
-        'button:has-text("ログイン")',
         'input[value="ログイン"]',
     ]
     clicked_login = False

@@ -79,6 +79,8 @@ async def step_login(page: Page) -> bool:
 
     # --- ログインボタン ---
     login_btn_selectors = [
+        'button.btn-login',
+        'button.authentication',
         'button:has-text("ログイン")',
         'button[type="submit"]',
         'input[type="submit"]',

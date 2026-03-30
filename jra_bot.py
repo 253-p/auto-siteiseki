@@ -373,64 +373,126 @@ async def step_remaining_seats(page: Page) -> bool:
 
 
 # ============================================================
-# ステップ6: 指定席の種類を選択
+# ステップ6: 指定席の種類を選択 → 注意事項確認 → 席数選択
 # ============================================================
 async def step_select_seat_type(page: Page) -> bool:
-    log(f"席種を優先順位に従って選択します: {config.SEAT_PRIORITY}")
+    log(f"席種を選択します（優先順位: {config.SEAT_PRIORITY}）")
 
-    for seat_name in config.SEAT_PRIORITY:
-        seat_selectors = [
-            f'a:has-text("{seat_name}")',
-            f'button:has-text("{seat_name}")',
-            f'input[value="{seat_name}"]',
-            f'label:has-text("{seat_name}") input',
-            f'td:has-text("{seat_name}") a',
-            f'td:has-text("{seat_name}") button',
-        ]
-        for sel in seat_selectors:
-            try:
-                element = await page.query_selector(sel)
-                if element:
-                    await element.click(timeout=5000)
-                    log(f"  席種「{seat_name}」を選択しました (セレクタ: {sel})")
-                    await page.wait_for_load_state("networkidle", timeout=config.BROWSER_TIMEOUT)
-                    return True
-            except Exception:
+    # ページ上の全席種を取得してログ出力
+    try:
+        seat_items = await page.eval_on_selector_all(
+            'ul.seat_kind_select li',
+            '''els => els.map((el, i) => {
+                const typeEl = el.querySelector(".type")
+                if (!typeEl) return null
+                const statusEl = typeEl.querySelector("span")
+                const text = typeEl.textContent.trim().replace(/\\s+/g, " ")
+                const status = statusEl ? statusEl.className.trim() : ""
+                return {index: i, text: text, status: status}
+            }).filter(x => x)'''
+        )
+        log("  ページ上の席種一覧:")
+        STATUS_LABEL = {"seat_vacant": "○空席", "seat_few": "△残少", "seat_none": "×満席"}
+        for item in seat_items:
+            log(f"    [{item['index']}] {item['text']}  {STATUS_LABEL.get(item['status'], item['status'])}")
+    except Exception as e:
+        log(f"  [WARN] 席種一覧の取得に失敗: {e}")
+        seat_items = []
+
+    # 優先リストに従って空席のある席種を選択
+    selected = None
+    for priority_name in config.SEAT_PRIORITY:
+        for item in seat_items:
+            if item["status"] == "seat_none":
                 continue
+            if priority_name in item["text"]:
+                selected = item
+                break
+        if selected:
+            break
 
-        log(f"  席種「{seat_name}」は見つかりませんでした。次の候補を試します。")
+    # 優先リストに一致しなければ最初の空席を自動選択
+    if not selected:
+        for item in seat_items:
+            if item["status"] != "seat_none":
+                selected = item
+                log(f"  優先席種が見つからないため最初の空席を自動選択: {item['text']}")
+                break
 
-    log("  [ERROR] 指定した席種がすべて見つかりませんでした。")
-    return False
+    if not selected:
+        log("  [ERROR] 空席のある席種が見つかりません。")
+        return False
+
+    idx = selected["index"]
+    log(f"  席種「{selected['text']}」を選択します (index: {idx})")
+
+    # 「おまかせ席選択」ラジオボタンのラベルをクリック
+    try:
+        await page.click(f'label[for="modal_open_{idx}"]', timeout=5000)
+        log(f"  「おまかせ席選択」をクリックしました")
+    except Exception as e:
+        log(f"  [ERROR] おまかせ席選択のクリックに失敗: {e}")
+        return False
+
+    await asyncio.sleep(0.5)
+
+    # ポップアップ: 注意事項チェックボックスをチェック
+    popup_sel = f'#Main_SeatListItemRepeater_SeatListItem_{idx}_ConfirmPopup_{idx}_PopupPanel_{idx}'
+    try:
+        await page.check(f'{popup_sel} input[type="checkbox"]', timeout=5000)
+        log(f"  注意事項チェックボックスをチェックしました")
+    except Exception:
+        try:
+            await page.check('.page_popup.is_show input[type="checkbox"]', timeout=5000)
+            log(f"  注意事項チェックボックスをチェックしました（フォールバック）")
+        except Exception as e2:
+            log(f"  [WARN] チェックボックスのチェックに失敗: {e2}")
+
+    await asyncio.sleep(0.5)
+
+    # ポップアップ: 「次へ進む」をクリック
+    try:
+        await page.click(f'{popup_sel} p#js_close_btn', timeout=5000)
+        log(f"  ポップアップ「次へ進む」をクリックしました")
+    except Exception:
+        try:
+            await page.click('.page_popup.is_show p#js_close_btn', timeout=5000)
+            log(f"  ポップアップ「次へ進む」をクリックしました（フォールバック）")
+        except Exception as e2:
+            log(f"  [WARN] 「次へ進む」のクリックに失敗: {e2}")
+
+    await asyncio.sleep(0.5)
+    return True
 
 
 # ============================================================
-# ステップ7: 確定ボタンをクリック
+# ステップ7: 席数を選択して確定（__doPostBack）
 # ============================================================
 async def step_confirm(page: Page) -> bool:
-    log("確定ボタンを探します")
+    seat_count = getattr(config, "SEAT_COUNT", 1)
+    log(f"席数「{seat_count}席」を選択します")
 
-    confirm_selectors = [
-        'button:has-text("確定")',
-        'input[value="確定"]',
-        'a:has-text("確定")',
-        'button:has-text("申し込む")',
-        'input[value="申し込む"]',
-        'button[type="submit"]',
-        'input[type="submit"]',
+    # 席数インデックス (1席=0, 2席=1, ...)
+    amount_idx = seat_count - 1
+
+    # 表示中モーダル内の席数リンクをクリック
+    # ul.seat_select_li 内の a タグ（:has-text で席数テキスト一致）
+    seat_count_selectors = [
+        f'ul.seat_select_li li a:has-text("{seat_count}席")',
+        f'.seat_select_li li:nth-child({seat_count}) a',
     ]
     clicked = False
-    for sel in confirm_selectors:
+    for sel in seat_count_selectors:
         try:
             await page.click(sel, timeout=5000)
-            log(f"  確定ボタンをクリックしました (セレクタ: {sel})")
+            log(f"  「{seat_count}席」をクリックしました (セレクタ: {sel})")
             clicked = True
             break
         except Exception:
             continue
 
     if not clicked:
-        log("  [ERROR] 確定ボタンが見つかりません。")
+        log(f"  [ERROR] 「{seat_count}席」ボタンが見つかりません。")
         return False
 
     await page.wait_for_load_state("networkidle", timeout=config.BROWSER_TIMEOUT)

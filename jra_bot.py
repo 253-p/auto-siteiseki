@@ -105,106 +105,107 @@ async def step_login(page: Page) -> bool:
     return True
 
 
+# 競馬場名の表示テキストマッピング
+RACECOURSE_LABEL_MAP = {
+    "東京": "東京競馬場",
+    "中山": "中山競馬場",
+    "阪神": "阪神競馬場",
+    "京都": "京都競馬場",
+    "福島": "福島競馬場",
+    "新潟": "新潟競馬場",
+    "小倉": "小倉競馬場",
+    "札幌": "札幌競馬場",
+    "函館": "函館競馬場",
+}
+
 # ============================================================
 # ステップ2: 競馬場・開催日を選択して検索
 # ============================================================
 async def step_search(page: Page) -> bool:
     log(f"競馬場「{config.RACECOURSE}」、開催日「{config.RACE_DATE}」で検索します")
 
-    # --- 競馬場選択（セレクトボックス or ラジオボタン）---
-    # NOTE: 実際のHTMLに応じてセレクタを変更してください
-    racecourse_selectors = [
-        f'select[name="racecourse"]',
-        f'select[id="racecourse"]',
-        f'select[name="venue"]',
-    ]
+    # config.RACECOURSEを表示ラベルに変換（例: "東京" → "東京競馬場"）
+    racecourse_label = RACECOURSE_LABEL_MAP.get(config.RACECOURSE, config.RACECOURSE)
+
+    # --- 競馬場選択: #dropDownListPlace ---
     selected_course = False
-    for sel in racecourse_selectors:
-        try:
-            await page.select_option(sel, label=config.RACECOURSE, timeout=5000)
-            log(f"  競馬場を選択しました (セレクタ: {sel})")
-            selected_course = True
-            break
-        except Exception:
-            continue
+    try:
+        # まずラベルで選択を試みる
+        await page.select_option('#dropDownListPlace', label=racecourse_label, timeout=5000)
+        log(f"  競馬場を選択しました (label: {racecourse_label})")
+        selected_course = True
+    except Exception:
+        pass
 
     if not selected_course:
-        # ラジオボタン形式の場合
-        radio_selectors = [
-            f'input[type="radio"][value="{config.RACECOURSE}"]',
-            f'label:has-text("{config.RACECOURSE}") input[type="radio"]',
-            f'label:has-text("{config.RACECOURSE}")',
+        try:
+            # ラベルが短縮形の場合も試みる
+            await page.select_option('#dropDownListPlace', label=config.RACECOURSE, timeout=5000)
+            log(f"  競馬場を選択しました (label: {config.RACECOURSE})")
+            selected_course = True
+        except Exception:
+            pass
+
+    if not selected_course:
+        log("  [ERROR] 競馬場の選択ができませんでした。")
+        return False
+
+    # 競馬場選択後、開催日リストが動的更新されるまで待機
+    log("  開催日リストの更新を待機中...")
+    try:
+        await page.wait_for_function(
+            "document.querySelector('#dropDownListEventDate') && "
+            "document.querySelector('#dropDownListEventDate').options.length > 1",
+            timeout=10000
+        )
+        log("  開催日リストが更新されました")
+    except Exception:
+        log("  [WARN] 開催日リストの更新を確認できませんでした。そのまま続行します。")
+
+    # --- 開催日選択: #dropDownListEventDate ---
+    filled_date = False
+    try:
+        # config.RACE_DATE ("YYYY/MM/DD") を含むoption textを探して選択
+        options = await page.eval_on_selector_all(
+            '#dropDownListEventDate option',
+            'els => els.map(el => ({value: el.value, text: el.textContent.trim()}))'
+        )
+        log(f"  開催日の選択肢: {[o['text'] for o in options if o['value']]}")
+        matched = next((o for o in options if config.RACE_DATE in o['text'] or o['text'] in config.RACE_DATE), None)
+        if matched:
+            await page.select_option('#dropDownListEventDate', value=matched['value'], timeout=5000)
+            log(f"  開催日を選択しました: {matched['text']}")
+            filled_date = True
+    except Exception as e:
+        log(f"  [WARN] 開催日の自動選択に失敗: {e}")
+
+    if not filled_date:
+        log("  [WARN] 開催日の選択ができませんでした。手動で確認してください。")
+
+    # --- 検索ボタン: __doPostBack ---
+    try:
+        await page.evaluate("__doPostBack('ctl00$Main$LinkButtonSearch','')")
+        log("  検索ボタンをクリックしました (__doPostBack)")
+    except Exception:
+        # フォールバック: テキストで探す
+        search_btn_selectors = [
+            'a[id*="LinkButtonSearch"]',
+            'a:has-text("検索")',
+            'button:has-text("検索")',
+            'input[value="検索"]',
         ]
-        for sel in radio_selectors:
+        clicked_search = False
+        for sel in search_btn_selectors:
             try:
                 await page.click(sel, timeout=5000)
-                log(f"  競馬場ラジオボタンをクリックしました (セレクタ: {sel})")
-                selected_course = True
+                log(f"  検索ボタンをクリックしました (セレクタ: {sel})")
+                clicked_search = True
                 break
             except Exception:
                 continue
-
-    if not selected_course:
-        log("  [WARN] 競馬場の選択ができませんでした。手動で確認してください。")
-
-    # --- 開催日入力 ---
-    date_selectors = [
-        'input[name="raceDate"]',
-        'input[name="race_date"]',
-        'input[id="raceDate"]',
-        'input[type="date"]',
-        'input[placeholder*="日付"]',
-        'input[placeholder*="開催日"]',
-    ]
-    filled_date = False
-    for sel in date_selectors:
-        try:
-            await page.fill(sel, config.RACE_DATE, timeout=5000)
-            log(f"  開催日を入力しました (セレクタ: {sel})")
-            filled_date = True
-            break
-        except Exception:
-            continue
-
-    if not filled_date:
-        # セレクトボックス形式の場合
-        date_select_selectors = [
-            'select[name="raceDate"]',
-            'select[id="raceDate"]',
-        ]
-        for sel in date_select_selectors:
-            try:
-                await page.select_option(sel, label=config.RACE_DATE, timeout=5000)
-                log(f"  開催日を選択しました (セレクタ: {sel})")
-                filled_date = True
-                break
-            except Exception:
-                continue
-
-    if not filled_date:
-        log("  [WARN] 開催日の入力ができませんでした。手動で確認してください。")
-
-    # --- 検索ボタン ---
-    search_btn_selectors = [
-        'button:has-text("検索")',
-        'input[value="検索"]',
-        'input[type="submit"]',
-        'button[type="submit"]',
-        'a:has-text("検索")',
-    ]
-    clicked_search = False
-    for sel in search_btn_selectors:
-        try:
-            await page.click(sel, timeout=5000)
-            log(f"  検索ボタンをクリックしました (セレクタ: {sel})")
-            clicked_search = True
-            break
-        except Exception:
-            continue
-
-    if not clicked_search:
-        log("  [ERROR] 検索ボタンが見つかりません。セレクタを確認してください。")
-        return False
+        if not clicked_search:
+            log("  [ERROR] 検索ボタンが見つかりません。")
+            return False
 
     await page.wait_for_load_state("networkidle", timeout=config.BROWSER_TIMEOUT)
     log("検索完了")
